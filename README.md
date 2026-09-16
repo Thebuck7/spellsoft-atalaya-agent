@@ -7,20 +7,48 @@ y qué servicios tiene arriba.
 
 ## Instalar
 
-En el servidor nuevo (Linux, Node 18+, Python 3):
+No hace falta saber programar. En el servidor nuevo (Linux, Node 18+, Python 3):
+
+1. Entrá al dashboard de Atalaya y hacé click en **"+ Agregar servidor"**.
+2. Copiá el comando que te muestra (ya trae tus credenciales incluidas).
+3. Pegalo en la terminal del servidor nuevo y presioná Enter. Va a tardar
+   unos minutos — instala solo, no hay que tocar nada más.
+
+El comando tiene esta forma (no hace falta escribirlo a mano, es solo para
+referencia):
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/Thebuck7/spellsoft-atalaya-agent/master/install.sh \
   | bash -s -- <SERVER_ID> <AGENT_TOKEN>
 ```
 
-`SERVER_ID` y `AGENT_TOKEN` los genera el dashboard de Atalaya al crear un
-servidor ("+ Agregar servidor" → copiar el comando que muestra) — no hace
-falta escribirlos a mano salvo para probar el instalador manualmente.
+`SERVER_ID` y `AGENT_TOKEN` los genera el dashboard al crear el servidor. Si
+ya tenés el agente instalado y solo necesitás cargar las credenciales a mano,
+el dashboard también te deja copiarlas por separado.
 
 El instalador clona este repo en `~/atalaya-agent`, instala y compila Portal
 (`portal/install.sh`), escribe `agent/.env` con las credenciales, y arranca
 todo con `./svc up`. A los ~15-30s el servidor aparece en el dashboard.
+
+### Si el instalador se queja de "make", "gcc" o "node-gyp"
+
+Portal usa un módulo nativo (`node-pty`) que necesita compilarse la primera
+vez. Si ves un error mencionando `node-gyp`, `make` o "compilador de C++",
+instalá el toolchain y volvé a correr **el mismo comando de arriba**:
+
+```bash
+# Debian/Ubuntu
+sudo apt update && sudo apt install -y build-essential python3-dev
+
+# Alpine
+sudo apk add build-base python3
+
+# RHEL/Fedora
+sudo dnf groupinstall -y 'Development Tools' && sudo dnf install -y python3
+```
+
+El instalador es seguro de correr varias veces — si algo ya está instalado,
+lo detecta y sigue donde quedó.
 
 ### Arranque automático al bootear
 

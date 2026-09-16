@@ -1,0 +1,28 @@
+[Unit]
+Description=Atalaya Agent (Portal + svc/watcher)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# svc up arranca Portal + el watcher como procesos propios (detached) y termina —
+# no es un proceso en primer plano, por eso oneshot + RemainAfterExit en vez de
+# Type=simple. systemd igual puede parar todo al hacer `systemctl stop` (mata el
+# cgroup completo) y ExecStop corre `svc down` para un apagado prolijo primero.
+Type=oneshot
+RemainAfterExit=yes
+# install.sh reemplaza /opt/atalaya-agent por la ruta real donde clonaste el repo.
+WorkingDirectory=/opt/atalaya-agent/agent
+ExecStart=/usr/bin/python3 /opt/atalaya-agent/agent/svc up
+ExecStop=/usr/bin/python3 /opt/atalaya-agent/agent/svc down
+Restart=on-failure
+RestartSec=5
+
+# Si corrés esto en un servidor real (no un entorno de un solo usuario/root como
+# este), usá un usuario sin privilegios en vez de root. Ejemplo para crearlo:
+#   sudo useradd -r -m -d /opt/atalaya-agent -s /usr/sbin/nologin atalaya
+#   sudo chown -R atalaya:atalaya /opt/atalaya-agent
+#User=atalaya
+#Group=atalaya
+
+[Install]
+WantedBy=multi-user.target

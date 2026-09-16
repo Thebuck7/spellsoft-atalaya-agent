@@ -54,3 +54,8 @@ echo
 say "Listo. Deberías ver este servidor en tu dashboard de Atalaya en unos ~15-30s."
 echo "  Control:  cd $INSTALL_DIR/agent && ./svc          # menú"
 echo "            cd $INSTALL_DIR/agent && ./svc status   # estado"
+echo
+echo "  Arranque automático al bootear (systemd):"
+echo "    sudo cp $INSTALL_DIR/agent/systemd/atalaya-agent.service.example /etc/systemd/system/atalaya-agent.service"
+echo "    sudo sed -i \"s#/opt/atalaya-agent#$INSTALL_DIR#g\" /etc/systemd/system/atalaya-agent.service"
+echo "    sudo systemctl daemon-reload && sudo systemctl enable --now atalaya-agent"

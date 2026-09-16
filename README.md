@@ -15,8 +15,9 @@ No hace falta saber programar. En el servidor nuevo (Linux, Node 18+, Python 3):
    unos minutos — instala solo, no hay que tocar nada más.
 
 ¿Instalando desde el celular con Termux (Android)? Seguí
-[docs/TERMUX.md](docs/TERMUX.md) — mismos pasos, con las particularidades
-de Android (batería, arranque automático, etc.).
+[docs/TERMUX.md](docs/TERMUX.md) — usa Ubuntu adentro de Termux
+(`proot-distro`), con las particularidades de Android (batería, arranque
+automático, etc.).
 
 El comando tiene esta forma (no hace falta escribirlo a mano, es solo para
 referencia):

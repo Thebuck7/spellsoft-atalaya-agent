@@ -1,0 +1,30 @@
+{
+  "name": "webterm-app",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Terminal web instalable en cualquier servidor — Vite + react-webterm + webterm-server, todo en un solo repo",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run build:lib && vite",
+    "build:lib": "npm run build -w react-webterm",
+    "build": "npm run build:lib && vite build",
+    "serve": "webterm-server --static dist --session-timeout inf",
+    "serve:lan": "webterm-server --static dist --session-timeout inf --host 0.0.0.0",
+    "start": "npm run build && npm run serve",
+    "start:lan": "npm run build && npm run serve:lan"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-webterm": "*",
+    "webterm-server": "*"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "dotenv": "^16.4.7",
+    "vite": "^5.4.11"
+  }
+}

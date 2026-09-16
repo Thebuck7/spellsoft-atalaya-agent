@@ -1,0 +1,456 @@
+#!/usr/bin/env python3
+"""
+svc — arranca el observer del dashboard y un menú para levantar/bajar apps.
+
+    svc                 checklist interactivo: ↑/↓ mover, espacio/enter
+                        marca/desmarca (arranca/para), r reinicia, l log
+    svc status          tabla de estado
+    svc up              observer + todas las apps con "default": true
+    svc down            para todas las apps que arrancó svc
+    svc start NAME...    arranca esas apps
+    svc stop  NAME...    para esas apps
+    svc restart NAME...
+    svc logs NAME        tail -f del log de esa app
+
+Todo sale de services.json (misma carpeta). El observer (watch-services.py)
+siempre se deja corriendo en background.
+"""
+
+import curses
+import io
+import json
+import os
+import re
+import signal
+import socket
+import subprocess
+import sys
+import time
+from contextlib import redirect_stdout
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+CONFIG = HERE / "services.json"
+RUN = HERE / ".run"
+WATCH_SH = HERE / "watch.sh"
+WATCH_PID = HERE / ".watch.pid"
+
+_tok_file = HERE / "token.txt"
+TOKEN = os.environ.get("WEBTERM_TOKEN") or (
+    _tok_file.read_text().strip() if _tok_file.exists() else ""
+)
+
+
+# ── helpers ─────────────────────────────────────────────────────────────────
+def load_services():
+    try:
+        return json.loads(CONFIG.read_text()).get("services", [])
+    except (OSError, ValueError) as e:
+        sys.exit("no pude leer %s: %s" % (CONFIG.name, e))
+
+
+def slug(name):
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+
+def subst(v):
+    return v.replace("{token}", TOKEN) if isinstance(v, str) else v
+
+
+def port_open(port):
+    s = socket.socket()
+    s.settimeout(0.4)
+    try:
+        return s.connect_ex(("127.0.0.1", int(port))) == 0
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
+def svc_ports(svc):
+    return [svc["port"]] + list(svc.get("alt_ports", []))
+
+
+def is_up(svc):
+    return any(port_open(p) for p in svc_ports(svc))
+
+
+def pid_file(svc):
+    return RUN / (slug(svc["name"]) + ".pid")
+
+
+def log_file(svc):
+    return RUN / (slug(svc["name"]) + ".log")
+
+
+def managed_pid(svc):
+    """PID vivo que arrancó svc, o None."""
+    try:
+        pid = int(pid_file(svc).read_text().strip())
+        os.kill(pid, 0)
+        return pid
+    except (OSError, ValueError):
+        return None
+
+
+def find(name):
+    name = name.lower()
+    for s in load_services():
+        if s["name"].lower() == name or slug(s["name"]) == slug(name):
+            return s
+    sys.exit("servicio desconocido: %s  (usa: %s)"
+             % (name, ", ".join(s["name"] for s in load_services())))
+
+
+# ── observer ────────────────────────────────────────────────────────────────
+def watcher_alive():
+    try:
+        os.kill(int(WATCH_PID.read_text().strip()), 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def ensure_watcher():
+    if watcher_alive():
+        return
+    subprocess.run(["bash", str(WATCH_SH), "start"], check=False)
+
+
+# ── start / stop ────────────────────────────────────────────────────────────
+def start(svc):
+    name = svc["name"]
+    if is_up(svc):
+        print("  %-12s ya está arriba" % name)
+        return
+    cmd = subst(svc.get("cmd") or "")
+    if not cmd:
+        print("  %-12s sin 'cmd' en services.json — arráncala a mano" % name)
+        return
+    RUN.mkdir(exist_ok=True)
+    env = dict(os.environ)
+    if TOKEN:
+        env["WEBTERM_TOKEN"] = TOKEN
+    for k, v in (svc.get("env") or {}).items():
+        env[k] = subst(v)
+    lf = open(log_file(svc), "ab")
+    lf.write(("\n--- %s  $ %s\n" % (time.strftime("%F %T"), cmd)).encode())
+    lf.flush()
+    p = subprocess.Popen(
+        cmd, shell=True, cwd=svc.get("cwd") or None, env=env,
+        stdout=lf, stderr=lf, stdin=subprocess.DEVNULL, start_new_session=True,
+    )
+    pid_file(svc).write_text(str(p.pid))
+    print("  %-12s arrancado (pid %d) → %s" % (name, p.pid, log_file(svc).name))
+
+
+def stop(svc):
+    name = svc["name"]
+    pid = managed_pid(svc)
+    if pid is None:
+        if is_up(svc):
+            print("  %-12s arriba pero no lo arrancó svc — párala a mano" % name)
+        else:
+            print("  %-12s ya estaba parado" % name)
+        pid_file(svc).unlink(missing_ok=True)
+        return
+    grp = None
+    try:
+        grp = os.getpgid(pid)
+    except OSError:
+        pass
+    _signal(pid, grp, signal.SIGTERM)
+    for _ in range(20):
+        if managed_pid(svc) is None:
+            break
+        time.sleep(0.3)
+    if managed_pid(svc) is not None:
+        _signal(pid, grp, signal.SIGKILL)
+    pid_file(svc).unlink(missing_ok=True)
+    print("  %-12s detenido" % name)
+
+
+def _signal(pid, grp, sig):
+    try:
+        os.killpg(grp, sig) if grp is not None else os.kill(pid, sig)
+    except OSError:
+        pass
+
+
+# ── vistas ──────────────────────────────────────────────────────────────────
+def state_str(svc):
+    if is_up(svc):
+        pid = managed_pid(svc)
+        if pid:
+            return "corriendo · pid %d" % pid
+        if not svc.get("cmd"):
+            return "corriendo"
+        return "corriendo (externo)"
+    return "parado"
+
+
+def print_status():
+    print("observer: %s\n" % ("activo" if watcher_alive() else "PARADO"))
+    for i, s in enumerate(load_services(), 1):
+        print("  %2d  %s  %-12s :%-5s  %s"
+              % (i, s.get("icon", "•"), s["name"], s["port"], state_str(s)))
+
+
+DOT_UP = "\033[32m●\033[0m"      # verde
+DOT_DOWN = "\033[90m○\033[0m"    # gris
+
+
+# ── checklist interactivo (curses) ────────────────────────────────────────
+def _toggle(s):
+    """Marca/desmarca la casilla de un servicio = lo para o lo arranca."""
+    buf = io.StringIO()
+    if is_up(s):
+        if not managed_pid(s):
+            return "%s corre por fuera de svc — párala a mano" % s["name"]
+        with redirect_stdout(buf):
+            stop(s)
+    else:
+        if not s.get("cmd"):
+            return "%s no tiene 'cmd' en services.json" % s["name"]
+        with redirect_stdout(buf):
+            start(s)
+    return buf.getvalue().strip()
+
+
+def _do_restart(s):
+    if not s.get("cmd"):
+        return "%s no la puedo arrancar yo" % s["name"]
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        stop(s); time.sleep(1); start(s)
+    return "  →  ".join(x for x in buf.getvalue().strip().splitlines() if x)
+
+
+def _view_log(stdscr, s):
+    lf = log_file(s)
+    if not lf.exists():
+        return "%s no tiene log todavía" % s["name"]
+    curses.def_prog_mode()
+    curses.endwin()
+    os.system("clear")
+    print("  log de %s  (Ctrl-C para volver)\n" % s["name"])
+    try:
+        subprocess.run(["tail", "-n", "40", "-f", str(lf)])
+    except KeyboardInterrupt:
+        pass
+    curses.reset_prog_mode()
+    stdscr.clear()
+    return ""
+
+
+def _draw_checklist(stdscr, svcs, idx, status_msg):
+    stdscr.erase()
+    h, w = stdscr.getmaxyx()
+    up_attr = curses.color_pair(1) | curses.A_BOLD
+    down_attr = curses.A_DIM
+
+    obs_ok = watcher_alive()
+    obs = "observer ✓" if obs_ok else "observer ✗ parado"
+    stdscr.addnstr(0, 2, "Servicios — marca para iniciar/detener", w - 4, curses.A_BOLD)
+    stdscr.addnstr(1, 2, obs, w - 4, curses.color_pair(1) if obs_ok else curses.color_pair(2))
+
+    row0 = 3
+    for i, s in enumerate(svcs):
+        y = row0 + i
+        if y >= h - 4:
+            break
+        up = is_up(s)
+        box = "[✓]" if up else "[ ]"
+        line = " %s %s %-12s :%-5s  %s" % (
+            box, s.get("icon", "•"), s["name"], s["port"], state_str(s))
+        attr = up_attr if up else down_attr
+        if i == idx:
+            attr |= curses.A_REVERSE
+        try:
+            stdscr.addnstr(y, 1, line.ljust(w - 3), w - 2, attr)
+        except curses.error:
+            pass
+
+    help_y = h - 3
+    legend = "[✓] activo   [ ] detenido"
+    keys = "↑/↓ mover · espacio/enter check · r reinicia · l log · q salir"
+    try:
+        stdscr.addnstr(help_y - 1, 2, legend, w - 4, curses.A_DIM)
+        stdscr.addnstr(help_y, 2, keys, w - 4, curses.A_DIM)
+        if status_msg:
+            stdscr.addnstr(help_y + 1, 2, status_msg, w - 4, curses.color_pair(3) | curses.A_BOLD)
+    except curses.error:
+        pass
+    stdscr.refresh()
+
+
+def _curses_menu(stdscr):
+    curses.curs_set(0)
+    stdscr.keypad(True)
+    stdscr.timeout(1000)  # refresca solo aunque no haya tecla, para reflejar cambios externos
+    curses.start_color()
+    curses.use_default_colors()
+    curses.init_pair(1, curses.COLOR_GREEN, -1)
+    curses.init_pair(2, curses.COLOR_RED, -1)
+    curses.init_pair(3, curses.COLOR_YELLOW, -1)
+
+    ensure_watcher()
+    idx = 0
+    status_msg = ""
+    just_acted = False
+    while True:
+        svcs = load_services()
+        if not svcs:
+            return
+        idx = max(0, min(idx, len(svcs) - 1))
+        _draw_checklist(stdscr, svcs, idx, status_msg)
+        if just_acted:
+            status_msg, just_acted = "", False
+
+        ch = stdscr.getch()
+        if ch == -1:
+            continue  # solo fue el refresco periódico
+        if ch in (ord('q'), ord('Q'), 27):
+            return
+        elif ch in (curses.KEY_UP, ord('k')):
+            idx = (idx - 1) % len(svcs)
+        elif ch in (curses.KEY_DOWN, ord('j')):
+            idx = (idx + 1) % len(svcs)
+        elif ch in (ord(' '), ord('\n'), ord('\r'), curses.KEY_ENTER):
+            _draw_checklist(stdscr, svcs, idx, "…")
+            status_msg, just_acted = _toggle(svcs[idx]), True
+        elif ch in (ord('r'), ord('R')):
+            _draw_checklist(stdscr, svcs, idx, "reiniciando…")
+            status_msg, just_acted = _do_restart(svcs[idx]), True
+        elif ch in (ord('l'), ord('L')):
+            status_msg, just_acted = _view_log(stdscr, svcs[idx]), True
+
+
+def menu():
+    if not sys.stdout.isatty():
+        return _menu_legacy()
+    try:
+        curses.wrapper(_curses_menu)
+    except curses.error:
+        _menu_legacy()
+
+
+# ── menú clásico (fallback si no hay terminal interactiva/curses) ─────────
+def _menu_legacy():
+    ensure_watcher()
+    msg = ""
+    while True:
+        svcs = load_services()
+        os.system("clear")
+        print("  \033[1mServicios\033[0m        observer %s\n"
+              % ("✓" if watcher_alive() else "\033[31m✗ parado\033[0m"))
+        for i, s in enumerate(svcs, 1):
+            up = is_up(s)
+            dot = DOT_UP if up else DOT_DOWN
+            print("   %d  %s  %-11s %s  \033[2m%s :%s\033[0m"
+                  % (i, s.get("icon", "•"), s["name"], dot,
+                     state_str(s), s["port"]))
+        print("\n  \033[2mun número arranca o para ese servicio · "
+              "r N reinicia · l N log · q salir\033[0m")
+        if msg:
+            print("  " + msg)
+        try:
+            raw = input("\n  > ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        msg = ""
+
+        if raw in ("q", "quit", "exit", ""):
+            if raw == "":
+                continue
+            return
+
+        m = re.match(r"^([rl])\s*(\d+)$", raw)
+        if m:
+            action, n = m.group(1), int(m.group(2))
+            if not (1 <= n <= len(svcs)):
+                msg = "no hay servicio %d" % n
+                continue
+            s = svcs[n - 1]
+            if action == "l":
+                lf = log_file(s)
+                if not lf.exists():
+                    msg = "%s no tiene log todavía" % s["name"]
+                    continue
+                os.system("clear")
+                print("  log de %s  (Ctrl-C para volver)\n" % s["name"])
+                try:
+                    subprocess.run(["tail", "-n", "40", "-f", str(lf)])
+                except KeyboardInterrupt:
+                    pass
+                continue
+            # restart
+            if not s.get("cmd"):
+                msg = "%s no la puedo arrancar yo" % s["name"]
+                continue
+            print()
+            stop(s); time.sleep(1); start(s)
+            time.sleep(0.5)
+            continue
+
+        if raw.isdigit() and 1 <= int(raw) <= len(svcs):
+            s = svcs[int(raw) - 1]
+            if is_up(s):
+                if managed_pid(s):
+                    print(); stop(s); time.sleep(0.3)
+                else:
+                    msg = "%s corre por fuera de svc — párala a mano" % s["name"]
+            elif not s.get("cmd"):
+                msg = "%s no tiene 'cmd' en services.json" % s["name"]
+            else:
+                print(); start(s); time.sleep(0.5)
+            continue
+
+        msg = "no entendí «%s»" % raw
+
+
+# ── main ────────────────────────────────────────────────────────────────────
+def main(argv):
+    cmd = argv[0] if argv else "menu"
+    rest = argv[1:]
+
+    if cmd in ("menu", ""):
+        menu()
+    elif cmd == "status":
+        print_status()
+    elif cmd == "up":
+        ensure_watcher()
+        for s in load_services():
+            if s.get("default"):
+                start(s)
+    elif cmd == "down":
+        for s in load_services():
+            if managed_pid(s):
+                stop(s)
+    elif cmd == "logs":
+        if not rest:
+            sys.exit("uso: svc logs NAME")
+        lf = log_file(find(rest[0]))
+        if not lf.exists():
+            sys.exit("sin log todavía: %s" % lf)
+        os.execvp("tail", ["tail", "-n", "60", "-f", str(lf)])
+    elif cmd in ("start", "stop", "restart"):
+        if not rest:
+            sys.exit("uso: svc %s NAME [NAME...]" % cmd)
+        ensure_watcher()
+        for n in rest:
+            s = find(n)
+            if cmd == "start":
+                start(s)
+            elif cmd == "stop":
+                stop(s)
+            else:
+                stop(s); time.sleep(1); start(s)
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

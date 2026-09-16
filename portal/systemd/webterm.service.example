@@ -1,0 +1,27 @@
+[Unit]
+Description=webterm - terminal web por WebSocket
+After=network.target
+
+[Service]
+Type=simple
+# install.sh reemplaza /opt/webterm-app por la ruta real donde clonaste el repo.
+WorkingDirectory=/opt/webterm-app
+EnvironmentFile=/opt/webterm-app/.env
+ExecStart=/usr/bin/node /opt/webterm-app/packages/webterm-server/src/cli.js --static /opt/webterm-app/dist
+Restart=on-failure
+RestartSec=2
+
+# Corré esto como un usuario sin privilegios, no root. Ejemplo para crearlo:
+#   sudo useradd -r -m -d /opt/webterm-app -s /usr/sbin/nologin webterm
+#   sudo chown -R webterm:webterm /opt/webterm-app
+User=webterm
+Group=webterm
+
+# Endurecido, pero sin romper node-pty (que necesita abrir /dev/ptmx y forkear shells).
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/webterm-app
+ProtectHome=false
+
+[Install]
+WantedBy=multi-user.target

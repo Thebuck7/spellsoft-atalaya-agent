@@ -1,0 +1,24 @@
+{
+  "name": "webterm-server",
+  "version": "1.0.0",
+  "description": "Adjunta un terminal PTY por WebSocket a cualquier servidor HTTP de Node",
+  "main": "src/index.js",
+  "types": "src/index.d.ts",
+  "bin": {
+    "webterm-server": "src/cli.js"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "start": "node src/cli.js"
+  },
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "node-pty": "^1.1.0",
+    "unzipper": "^0.12.3",
+    "ws": "^8.18.0"
+  }
+}

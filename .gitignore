@@ -1,0 +1,11 @@
+agent/.env
+agent/.run/
+agent/.watch.pid
+agent/.watch-state.json
+agent/.watch-stderr.log
+agent/watch-services.log
+
+portal/node_modules/
+portal/dist/
+portal/.env
+portal/packages/*/node_modules/

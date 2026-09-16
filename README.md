@@ -14,6 +14,10 @@ No hace falta saber programar. En el servidor nuevo (Linux, Node 18+, Python 3):
 3. Pegalo en la terminal del servidor nuevo y presioná Enter. Va a tardar
    unos minutos — instala solo, no hay que tocar nada más.
 
+¿Instalando desde el celular con Termux (Android)? Seguí
+[docs/TERMUX.md](docs/TERMUX.md) — mismos pasos, con las particularidades
+de Android (batería, arranque automático, etc.).
+
 El comando tiene esta forma (no hace falta escribirlo a mano, es solo para
 referencia):
 

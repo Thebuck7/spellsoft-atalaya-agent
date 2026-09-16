@@ -50,12 +50,25 @@ EOF
 say "Arrancando (Portal + watcher)"
 ( cd "$INSTALL_DIR/agent" && ./svc up )
 
+SYSTEMD_OK=0
+if [ "$(id -u)" = "0" ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+  say "Configurando arranque automático (systemd)"
+  sed "s#/opt/atalaya-agent#$INSTALL_DIR#g" \
+    "$INSTALL_DIR/agent/systemd/atalaya-agent.service.example" > /etc/systemd/system/atalaya-agent.service
+  systemctl daemon-reload
+  systemctl enable --now atalaya-agent >/dev/null 2>&1 && SYSTEMD_OK=1
+fi
+
 echo
 say "Listo. Deberías ver este servidor en tu dashboard de Atalaya en unos ~15-30s."
 echo "  Control:  cd $INSTALL_DIR/agent && ./svc          # menú"
 echo "            cd $INSTALL_DIR/agent && ./svc status   # estado"
-echo
-echo "  Arranque automático al bootear (systemd):"
-echo "    sudo cp $INSTALL_DIR/agent/systemd/atalaya-agent.service.example /etc/systemd/system/atalaya-agent.service"
-echo "    sudo sed -i \"s#/opt/atalaya-agent#$INSTALL_DIR#g\" /etc/systemd/system/atalaya-agent.service"
-echo "    sudo systemctl daemon-reload && sudo systemctl enable --now atalaya-agent"
+if [ "$SYSTEMD_OK" = "1" ]; then
+  echo "  Arranque automático: activado (systemctl status atalaya-agent)"
+else
+  echo
+  echo "  Arranque automático al bootear (opcional, necesita root/sudo):"
+  echo "    sudo cp $INSTALL_DIR/agent/systemd/atalaya-agent.service.example /etc/systemd/system/atalaya-agent.service"
+  echo "    sudo sed -i \"s#/opt/atalaya-agent#$INSTALL_DIR#g\" /etc/systemd/system/atalaya-agent.service"
+  echo "    sudo systemctl daemon-reload && sudo systemctl enable --now atalaya-agent"
+fi

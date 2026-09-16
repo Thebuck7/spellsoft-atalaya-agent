@@ -22,16 +22,11 @@ El instalador clona este repo en `~/atalaya-agent`, instala y compila Portal
 (`portal/install.sh`), escribe `agent/.env` con las credenciales, y arranca
 todo con `./svc up`. A los ~15-30s el servidor aparece en el dashboard.
 
-### Arranque automático al bootear (opcional)
+### Arranque automático al bootear
 
-El instalador imprime al final los comandos exactos para tu instalación, pero
-en resumen (`sudo`, systemd):
-
-```bash
-sudo cp ~/atalaya-agent/agent/systemd/atalaya-agent.service.example /etc/systemd/system/atalaya-agent.service
-sudo sed -i "s#/opt/atalaya-agent#$HOME/atalaya-agent#g" /etc/systemd/system/atalaya-agent.service
-sudo systemctl daemon-reload && sudo systemctl enable --now atalaya-agent
-```
+Si corriste el instalador como **root** (lo más común en un servidor propio),
+ya quedó activado solo — no hay que hacer nada más. Si no, el instalador
+imprime al final los 3 comandos (`sudo`) para activarlo a mano.
 
 Sin esto, `svc up` solo queda corriendo hasta el próximo reinicio del servidor.
 

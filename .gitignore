@@ -1,4 +1,5 @@
 agent/.env
+agent/services.local.json
 agent/.run/
 agent/.watch.pid
 agent/.watch-state.json

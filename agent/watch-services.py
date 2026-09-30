@@ -47,7 +47,11 @@ HTTP_TIMEOUT = 10         # timeout del PUT a la API
 
 STATE_FILE = HERE / ".watch-state.json"   # último payload publicado (cache local)
 LOG_FILE = HERE / "watch-services.log"
-CONFIG_FILE = HERE / "services.json"       # fuente de verdad de servicios
+CONFIG_FILE = HERE / "services.json"       # fuente de verdad de servicios (default del repo)
+# Override por máquina, gitignored: el repo trae un services.json genérico, pero
+# cada servidor corre cosas distintas (puertos, rutas, cwd). Sin esto había que
+# editar el archivo trackeado y quedaba modificado para siempre en git.
+LOCAL_CONFIG_FILE = HERE / "services.local.json"
 ENV_FILE = HERE / ".env"                   # SERVER_ID / AGENT_TOKEN / API_URL
 PORTAL_ENV_FILE = HERE.parent / "portal" / ".env"   # WEBTERM_TOKEN de Portal (opcional)
 
@@ -87,7 +91,16 @@ HEARTBEAT_SEC = _int_setting("HEARTBEAT_SEC", HEARTBEAT_SEC)
 
 # Token de Portal (para armar el link "/?token=..." en el path publicado) — no
 # confundir con AGENT_TOKEN de arriba, que autentica el heartbeat con la API.
-TOKEN = read_env(PORTAL_ENV_FILE).get("WEBTERM_TOKEN", "")
+# Precedencia: lo explícito le gana a lo inferido. agent/.env y el entorno son
+# config que puso el operador para ESTA máquina; portal/.env es una inferencia
+# ("el Portal que corre debe ser el de al lado"), y puede estar viejo — si el
+# Portal real lo arranca otro launcher con otro token (acá `svc`, desde su
+# token.txt), el link publicado sale con el token equivocado y da 401.
+TOKEN = (
+    os.environ.get("WEBTERM_TOKEN")
+    or _agent_env.get("WEBTERM_TOKEN")
+    or read_env(PORTAL_ENV_FILE).get("WEBTERM_TOKEN", "")
+)
 
 # Fallback si services.json falta o está roto — coincide con el default de
 # services.json de este repo (una sola entrada: Terminal / Portal).
@@ -98,10 +111,15 @@ _DEFAULT_SERVICES = [
 _DEFAULT_DISCOVER = [3000, 3002, 3003, 4000, 5000, 8000, 9000]
 
 
+def config_path():
+    """services.local.json si existe (config de esta máquina), si no el default."""
+    return LOCAL_CONFIG_FILE if LOCAL_CONFIG_FILE.exists() else CONFIG_FILE
+
+
 def load_config():
-    """(services[], discover_ports[]) desde services.json, con fallback."""
+    """(services[], discover_ports[]) desde el services.json vigente, con fallback."""
     try:
-        d = json.loads(CONFIG_FILE.read_text())
+        d = json.loads(config_path().read_text())
         return (d.get("services") or _DEFAULT_SERVICES,
                 d.get("discover_ports") or _DEFAULT_DISCOVER)
     except (OSError, ValueError):
@@ -280,8 +298,8 @@ def main():
     signal.signal(signal.SIGINT, _stop)
 
     last_fp, last_pub = load_state()
-    log("watcher iniciado · poll=%ss heartbeat=%ss api=%s server=%s"
-        % (POLL_INTERVAL, HEARTBEAT_SEC, API_URL, SERVER_ID))
+    log("watcher iniciado · poll=%ss heartbeat=%ss config=%s api=%s server=%s"
+        % (POLL_INTERVAL, HEARTBEAT_SEC, config_path().name, API_URL, SERVER_ID))
 
     while _running:
         ip, services = probe()

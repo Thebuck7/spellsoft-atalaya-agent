@@ -51,6 +51,10 @@ function tokenMatches(expected, given) {
  * @param {boolean}  [options.files=true]            expose upload/download HTTP routes for each session's cwd
  * @param {string}   [options.filesPath="/webterm-files"] base path for the file routes
  * @param {number}   [options.maxUploadBytes=524288000] cap on a single uploaded file (default 500MB)
+ * @param {number}   [options.pingInterval=30000]    ms between WebSocket pings; a client that
+ *                                                   misses one is terminated. 0 = disabled.
+ * @param {number}   [options.maxBufferedBytes=8388608] per-client socket backlog before output
+ *                                                   starts being dropped for that client
  * @returns {import('ws').WebSocketServer & {filesMiddleware: Function, filesPath: string}}
  */
 function attachWebTerm(server, options = {}) {
@@ -71,6 +75,8 @@ function attachWebTerm(server, options = {}) {
     files = true,
     filesPath = "/webterm-files",
     maxUploadBytes = 500 * 1024 * 1024,
+    pingInterval = 30_000,
+    maxBufferedBytes = 8 * 1024 * 1024,
   } = options;
 
   /** @type {Map<string, {id:string, term:any, clients:Set<any>, buffer:string[], bytes:number, killTimer:any}>} */
@@ -129,7 +135,22 @@ function attachWebTerm(server, options = {}) {
         session.bytes -= session.buffer.shift().length;
       }
       for (const ws of session.clients) {
-        if (ws.readyState === ws.OPEN) ws.send(d);
+        if (ws.readyState !== ws.OPEN) continue;
+        // Un cliente que no drena (pestaña en background, red mala, o un
+        // `yes`/`cat` de un archivo gigante) acumula todo en el buffer del
+        // socket: seguir escribiéndole crece sin techo hasta voltear el
+        // proceso. Se le corta la salida mientras esté atrasado; el scrollback
+        // de la sesión sigue guardando el final, así que al reengancharse
+        // recupera contexto.
+        if (ws.bufferedAmount > maxBufferedBytes) {
+          ws.wtDropping = true;
+          continue;
+        }
+        if (ws.wtDropping) {
+          ws.wtDropping = false;
+          ws.send("\r\n\x1b[33m[salida recortada: el cliente no alcanzaba]\x1b[0m\r\n");
+        }
+        ws.send(d);
       }
     });
 
@@ -141,6 +162,7 @@ function attachWebTerm(server, options = {}) {
         }
       }
       clearTimeout(session.killTimer);
+      session.clients.clear();
       sessions.delete(id);
     });
 
@@ -160,7 +182,36 @@ function attachWebTerm(server, options = {}) {
     sessions.delete(session.id);
   }
 
+  // Keepalive. Sin esto, un cliente que desaparece sin cerrar el socket (móvil
+  // que se suspende, wifi que se corta, NAT que expira) queda para siempre en
+  // `session.clients`: el "close" nunca llega, así que el killTimer de
+  // sessionTimeout no arranca y la sesión queda viva aunque nadie la mire.
+  const heartbeat =
+    pingInterval > 0
+      ? setInterval(() => {
+          for (const session of sessions.values()) {
+            for (const ws of session.clients) {
+              if (ws.wtAlive === false) {
+                ws.terminate(); // dispara "close" -> limpieza normal
+                continue;
+              }
+              ws.wtAlive = false;
+              try {
+                ws.ping();
+              } catch {
+                /* socket ya muerto; el terminate del próximo tick lo saca */
+              }
+            }
+          }
+        }, pingInterval)
+      : null;
+  heartbeat?.unref?.(); // que no mantenga vivo el proceso por sí solo
+
   wss.on("connection", (ws, req) => {
+    ws.wtAlive = true;
+    ws.on("pong", () => {
+      ws.wtAlive = true;
+    });
     const requestedId = new URL(req.url, "http://x").searchParams.get("sessionId");
     const id = requestedId || randomUUID();
 
@@ -232,6 +283,7 @@ function attachWebTerm(server, options = {}) {
 
   wss.on("close", () => {
     server.removeListener("upgrade", onUpgrade);
+    clearInterval(heartbeat);
     for (const session of sessions.values()) destroySession(session);
   });
 

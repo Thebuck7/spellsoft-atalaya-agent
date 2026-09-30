@@ -3,9 +3,11 @@
 Watcher de servicios del agente de Atalaya.
 
 Corre en background, sondea puertos locales cada POLL_INTERVAL segundos y
-publica el estado a la API de Atalaya (PUT /servers/{SERVER_ID}/status) SOLO
-cuando cambia: un servicio se levanta o se cae, cambia la IP, o cambia un
-puerto/ruta.
+publica el estado a la API de Atalaya (PUT /servers/{SERVER_ID}/status) cuando
+cambia algo (un servicio se levanta o se cae, cambia la IP, un puerto o una
+ruta) y, si no cambió nada, cada HEARTBEAT_SEC como latido — ese latido es lo
+que le permite al dashboard detectar que esta máquina se apagó, en vez de
+mostrar para siempre el último estado publicado.
 
 Diseñado para consumir casi nada:
   - solo stdlib (sin dependencias — el PUT usa urllib, no requests/boto3)
@@ -34,7 +36,12 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 
 POLL_INTERVAL = 15        # segundos entre sondeos
-HEARTBEAT_SEC = 0         # republicar aunque no haya cambios (0 = solo-cambios)
+# Republicar aunque no haya cambios. NO es opcional para que el dashboard sirva:
+# sin latido, un agente muerto deja su último estado congelado en la API y
+# Atalaya no puede distinguir "todo arriba" de "esta máquina está apagada".
+# El dashboard marca "sin contacto" si updatedAt pasa STALE_MS (6 min), así que
+# 120s deja margen para un par de latidos perdidos. Cuesta ~720 PUT/día.
+HEARTBEAT_SEC = 120
 PORT_TIMEOUT = 0.4        # timeout del connect() por puerto
 HTTP_TIMEOUT = 10         # timeout del PUT a la API
 
@@ -64,6 +71,19 @@ _agent_env = read_env(ENV_FILE)
 SERVER_ID = _agent_env.get("SERVER_ID", "")
 AGENT_TOKEN = _agent_env.get("AGENT_TOKEN", "")
 API_URL = _agent_env.get("API_URL", "").rstrip("/")
+
+# Overrides opcionales desde agent/.env o el entorno (útil para bajar el costo
+# de latidos en una máquina que casi no cambia, o subir la frecuencia al debuggear).
+def _int_setting(key, default):
+    raw = os.environ.get(key, _agent_env.get(key, ""))
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+POLL_INTERVAL = _int_setting("POLL_INTERVAL", POLL_INTERVAL)
+HEARTBEAT_SEC = _int_setting("HEARTBEAT_SEC", HEARTBEAT_SEC)
 
 # Token de Portal (para armar el link "/?token=..." en el path publicado) — no
 # confundir con AGENT_TOKEN de arriba, que autentica el heartbeat con la API.

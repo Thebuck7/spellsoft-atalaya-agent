@@ -49,6 +49,17 @@ export interface AttachWebTermOptions {
   filesPath?: string;
   /** Cap on a single uploaded file, in bytes. Default 500MB. */
   maxUploadBytes?: number;
+  /**
+   * ms between WebSocket pings. A client that misses one is terminated, so a
+   * connection that vanished without closing (suspended phone, dropped wifi)
+   * stops holding its session alive. 0 disables the keepalive. Default 30000.
+   */
+  pingInterval?: number;
+  /**
+   * Per-client socket backlog, in bytes, before output is dropped for that
+   * client instead of queued forever. Default 8MB.
+   */
+  maxBufferedBytes?: number;
 }
 
 export function attachWebTerm(

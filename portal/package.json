@@ -1,9 +1,9 @@
 {
-  "name": "webterm-app",
+  "name": "portal-app",
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "Terminal web instalable en cualquier servidor — Vite + react-webterm + webterm-server, todo en un solo repo",
+  "description": "Portal — terminal web instalable en cualquier servidor (Vite + react-webterm + webterm-server, todo en un solo repo)",
   "workspaces": [
     "packages/*"
   ],

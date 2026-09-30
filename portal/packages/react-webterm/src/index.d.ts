@@ -19,7 +19,14 @@ export interface WebTermProps {
   theme?: ITheme;
   cursorBlink?: boolean;
   autoReconnect?: boolean;
+  /** ms before the first retry; later retries back off exponentially. Default 1000. */
   reconnectDelay?: number;
+  /** Ceiling for the reconnect backoff, in ms. Default 15000. */
+  maxReconnectDelay?: number;
+  /** Render with the WebGL addon when available (lazy-loaded). Default true. */
+  webgl?: boolean;
+  /** Show the find bar (Ctrl/Cmd+Shift+F). Default true. */
+  search?: boolean;
   header?: boolean;
   /** Copy the mouse selection to the clipboard automatically. Default true. */
   copyOnSelect?: boolean;
@@ -55,6 +62,12 @@ export interface WebTermHandle {
   paste(text?: string): Promise<void>;
   /** Upload files into the shell's current cwd (same as a drag&drop). */
   uploadFiles(files: FileList | File[]): void;
+  /** Open the find bar, seeded with the current selection. */
+  openFind(): void;
+  /** Jump to the next match (defaults to the find bar's current query). */
+  findNext(query?: string): void;
+  /** Jump to the previous match. */
+  findPrevious(query?: string): void;
   getSessionId(): string | null;
   getTerminal(): Xterm | null;
   getSocket(): WebSocket | null;
@@ -95,6 +108,8 @@ export interface TerminalWorkspaceProps {
   files?: boolean;
   /** Base path for the file HTTP routes. Default "/webterm-files". */
   filesPath?: string;
+  /** Show the find bar in each terminal. Default true. */
+  search?: boolean;
   newTerminalTitle?: (n: number) => string;
   className?: string;
   style?: CSSProperties;

@@ -9,6 +9,7 @@ import {
 import { Terminal as Xterm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { SearchAddon } from "@xterm/addon-search";
 import { zip } from "fflate";
 import "@xterm/xterm/css/xterm.css";
 import "./style.css";
@@ -16,6 +17,18 @@ import "./style.css";
 const DEFAULT_FONT =
   'ui-monospace, "Cascadia Code", "Fira Code", "SF Mono", Menlo, Consolas, monospace';
 const DEFAULT_THEME = { background: "#1e1e1e", foreground: "#d4d4d4" };
+
+// Resaltado del buscador. Pintar TODAS las coincidencias (no solo la activa)
+// necesita `decorations` + allowProposedApi, que ya está activo.
+const SEARCH_DECORATIONS = {
+  matchBackground: "#5a4b00",
+  matchBorder: "#d29922",
+  matchOverviewRuler: "#d29922",
+  activeMatchBackground: "#0e639c",
+  activeMatchBorder: "#7cc7ff",
+  activeMatchColorOverviewRuler: "#7cc7ff",
+};
+const SEARCH_OPTS = { decorations: SEARCH_DECORATIONS };
 
 function newId() {
   try {
@@ -200,7 +213,13 @@ function formatBytes(n) {
  *   theme           xterm theme object
  *   cursorBlink     bool (default true)
  *   autoReconnect   bool (default false)
- *   reconnectDelay  ms between retries (default 1000)
+ *   reconnectDelay  ms before the first retry (default 1000). Later retries
+ *                   back off exponentially with jitter, up to maxReconnectDelay.
+ *   maxReconnectDelay  ms ceiling for the backoff (default 15000)
+ *   webgl           render with the WebGL addon when the browser supports it
+ *                   (default true). Much faster on heavy output; falls back to
+ *                   the DOM renderer on its own if the context is lost.
+ *   search          show the find bar (Ctrl/Cmd+Shift+F) (default true)
  *   header          show the status bar + reconnect button (default false)
  *   onStatusChange  (status) => void   "connecting" | "connected" | "disconnected"
  *   onData          (chunk) => void    raw output, as it arrives
@@ -239,7 +258,8 @@ function formatBytes(n) {
  *
  * Ref API: focus(), fit(), clear(), write(data), sendInput(data), reconnect(),
  *          newSession(), endSession(), copySelection(), paste(text?),
- *          uploadFiles(fileList), getSessionId(), getTerminal(), getSocket()
+ *          uploadFiles(fileList), openFind(), findNext(query?),
+ *          findPrevious(query?), getSessionId(), getTerminal(), getSocket()
  */
 export const WebTerm = forwardRef(function WebTerm(props, ref) {
   const {
@@ -254,6 +274,9 @@ export const WebTerm = forwardRef(function WebTerm(props, ref) {
     cursorBlink = true,
     autoReconnect = false,
     reconnectDelay = 1000,
+    maxReconnectDelay = 15000,
+    webgl = true,
+    search = true,
     header = false,
     copyOnSelect = true,
     pasteOnRightClick = false,
@@ -276,6 +299,10 @@ export const WebTerm = forwardRef(function WebTerm(props, ref) {
   const fitRef = useRef(null);
   const wsRef = useRef(null);
   const retryRef = useRef(null);
+  const attemptRef = useRef(0); // reintentos seguidos fallidos -> backoff
+  const wasConnectedRef = useRef(false); // para avisar "[desconectado]" una sola vez
+  const searchRef = useRef(null);
+  const findInputRef = useRef(null);
   const firstConnectRef = useRef(true);
   const deadRef = useRef(false); // set by endSession() -> stop reconnecting
   const cbRef = useRef({});
@@ -283,6 +310,7 @@ export const WebTerm = forwardRef(function WebTerm(props, ref) {
   cbRef.current.onStatusChange = onStatusChange;
   cbRef.current.copyOnSelect = copyOnSelect;
   cbRef.current.pasteOnRightClick = pasteOnRightClick;
+  cbRef.current.search = search;
 
   // Resolve the session id synchronously, before the connect effect runs.
   // Precedence: explicit `sessionId` prop > persisted (sessionStorage) > ephemeral.
@@ -314,6 +342,9 @@ export const WebTerm = forwardRef(function WebTerm(props, ref) {
 
   const [status, setStatus] = useState("connecting");
   const [nonce, setNonce] = useState(0);
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [findInfo, setFindInfo] = useState({ index: -1, count: 0 });
 
   const setStat = useCallback((s) => {
     setStatus(s);
@@ -327,7 +358,11 @@ export const WebTerm = forwardRef(function WebTerm(props, ref) {
     ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
   }, []);
 
-  const reconnect = useCallback(() => setNonce((n) => n + 1), []);
+  const reconnect = useCallback(() => {
+    attemptRef.current = 0; // un reintento manual no hereda el backoff acumulado
+    clearTimeout(retryRef.current);
+    setNonce((n) => n + 1);
+  }, []);
 
   const newSession = useCallback(() => {
     const id = newId();
@@ -380,6 +415,41 @@ export const WebTerm = forwardRef(function WebTerm(props, ref) {
     const t = text ?? (await readClipboard());
     if (t != null && t !== "") termRef.current?.paste(t);
   }, []);
+
+  // ── Buscador en el scrollback ─────────────────────────────────────────
+  const findNext = useCallback((q) => {
+    const query = q ?? findInputRef.current?.value ?? "";
+    if (!query) return;
+    searchRef.current?.findNext(query, SEARCH_OPTS);
+  }, []);
+
+  const findPrevious = useCallback((q) => {
+    const query = q ?? findInputRef.current?.value ?? "";
+    if (!query) return;
+    searchRef.current?.findPrevious(query, SEARCH_OPTS);
+  }, []);
+
+  const openFind = useCallback(() => {
+    // Si hay algo seleccionado, se busca eso (igual que en un editor).
+    const sel = termRef.current?.getSelection();
+    setFindOpen(true);
+    if (sel && !sel.includes("\n")) setFindQuery(sel);
+    requestAnimationFrame(() => {
+      findInputRef.current?.focus();
+      findInputRef.current?.select();
+    });
+  }, []);
+
+  const closeFind = useCallback(() => {
+    setFindOpen(false);
+    setFindInfo({ index: -1, count: 0 });
+    searchRef.current?.clearDecorations?.();
+    termRef.current?.clearSelection();
+    termRef.current?.focus();
+  }, []);
+
+  const openFindRef = useRef(openFind);
+  openFindRef.current = openFind;
 
   // ── Files: upload into / download from the shell's current cwd ─────────
   const filesOrigin = resolveHttpOrigin(url);
@@ -660,11 +730,25 @@ export const WebTerm = forwardRef(function WebTerm(props, ref) {
       copySelection,
       paste,
       uploadFiles,
+      openFind,
+      findNext,
+      findPrevious,
       getSessionId: () => sessionIdRef.current,
       getTerminal: () => termRef.current,
       getSocket: () => wsRef.current,
     }),
-    [reconnect, newSession, endSession, copySelection, paste, sendResize, uploadFiles],
+    [
+      reconnect,
+      newSession,
+      endSession,
+      copySelection,
+      paste,
+      sendResize,
+      uploadFiles,
+      openFind,
+      findNext,
+      findPrevious,
+    ],
   );
 
   // Create the xterm instance once.
@@ -680,6 +764,41 @@ export const WebTerm = forwardRef(function WebTerm(props, ref) {
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon());
     term.open(screenRef.current);
+
+    // El renderer WebGL tiene que cargarse DESPUÉS de open() (necesita el
+    // canvas). Si el navegador no da contexto WebGL —o lo pierde después, p.ej.
+    // al quedar la pestaña mucho tiempo en background— se descarta el addon y
+    // xterm sigue con el renderer DOM: más lento, pero siempre funciona.
+    //
+    // Va por import() dinámico a propósito: el addon pesa ~100KB y la terminal
+    // ya es usable sin él, así que se carga en un chunk aparte en vez de
+    // retrasar el primer render (importa en LAN/móvil).
+    let webglAddon = null;
+    let disposed = false;
+    if (webgl) {
+      import("@xterm/addon-webgl")
+        .then(({ WebglAddon }) => {
+          if (disposed) return;
+          const addon = new WebglAddon();
+          addon.onContextLoss(() => {
+            addon.dispose();
+            webglAddon = null;
+          });
+          term.loadAddon(addon);
+          webglAddon = addon;
+        })
+        .catch(() => {
+          /* sin WebGL disponible: se queda el renderer DOM */
+        });
+    }
+
+    const searchAddon = new SearchAddon();
+    term.loadAddon(searchAddon);
+    searchRef.current = searchAddon;
+    const searchResults = searchAddon.onDidChangeResults?.((r) =>
+      setFindInfo({ index: r?.resultIndex ?? -1, count: r?.resultCount ?? 0 }),
+    );
+
     fit.fit();
 
     termRef.current = term;
@@ -764,6 +883,12 @@ export const WebTerm = forwardRef(function WebTerm(props, ref) {
       const mod = e.ctrlKey || e.metaKey;
       const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
 
+      if (cbRef.current.search && mod && e.shiftKey && key === "f") {
+        e.preventDefault();
+        openFindRef.current?.();
+        return false;
+      }
+
       const isCopy =
         (mod && e.shiftKey && key === "c") ||
         (e.ctrlKey && key === "Insert") ||
@@ -829,6 +954,16 @@ export const WebTerm = forwardRef(function WebTerm(props, ref) {
       term.textarea?.removeEventListener("focus", disableAutoCap);
       term.element?.removeEventListener("touchstart", onAltTouchStart);
       term.element?.removeEventListener("touchmove", onAltTouchMove);
+      disposed = true;
+      searchResults?.dispose();
+      searchRef.current = null;
+      // term.dispose() ya libera los addons cargados; el webgl se descarta
+      // explícitamente porque además tiene que soltar el contexto GL.
+      try {
+        webglAddon?.dispose();
+      } catch {
+        /* ya descartado por onContextLoss */
+      }
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
@@ -862,6 +997,8 @@ export const WebTerm = forwardRef(function WebTerm(props, ref) {
 
     ws.onopen = () => {
       setStat("connected");
+      attemptRef.current = 0;
+      wasConnectedRef.current = true;
       // On a reconnect the server replays the session scrollback, so wipe the
       // stale screen first to avoid doubling it. On the very first connect the
       // terminal is already empty — skip the reset to avoid a flash.
@@ -878,9 +1015,25 @@ export const WebTerm = forwardRef(function WebTerm(props, ref) {
     ws.onclose = () => {
       if (closedByUs || deadRef.current) return;
       setStat("disconnected");
-      term.write("\r\n\x1b[33m[desconectado]\x1b[0m\r\n");
+      // El aviso se escribe solo en la primera caída: con autoReconnect y el
+      // server abajo, imprimirlo en cada intento llena la pantalla de
+      // "[desconectado]" y tapa lo último que se vio.
+      if (wasConnectedRef.current) {
+        wasConnectedRef.current = false;
+        term.write(
+          autoReconnect
+            ? "\r\n\x1b[33m[desconectado — reintentando]\x1b[0m\r\n"
+            : "\r\n\x1b[33m[desconectado]\x1b[0m\r\n",
+        );
+      }
       if (autoReconnect) {
-        retryRef.current = setTimeout(() => setNonce((n) => n + 1), reconnectDelay);
+        // Backoff exponencial con jitter: reintentar cada segundo mientras el
+        // server está caído es un pedido por segundo por terminal abierta, para
+        // nada. El jitter evita que todas las terminales reintenten al unísono.
+        const attempt = attemptRef.current++;
+        const base = Math.min(reconnectDelay * 2 ** attempt, maxReconnectDelay);
+        const delay = Math.round(base * (0.7 + Math.random() * 0.3));
+        retryRef.current = setTimeout(() => setNonce((n) => n + 1), delay);
       }
     };
     ws.onerror = () => {};
@@ -897,7 +1050,17 @@ export const WebTerm = forwardRef(function WebTerm(props, ref) {
       disposable.dispose();
       ws.close();
     };
-  }, [nonce, url, token, sessionIdProp, autoReconnect, reconnectDelay, setStat, sendResize]);
+  }, [
+    nonce,
+    url,
+    token,
+    sessionIdProp,
+    autoReconnect,
+    reconnectDelay,
+    maxReconnectDelay,
+    setStat,
+    sendResize,
+  ]);
 
   return (
     <div
@@ -930,37 +1093,123 @@ export const WebTerm = forwardRef(function WebTerm(props, ref) {
       >
         <div className="webterm__screen" ref={screenRef} />
 
+        {(files || search) && (
+          <div className="webterm__filesbar">
+            {search && (
+              <button
+                type="button"
+                className={"webterm__filesbtn" + (findOpen ? " is-active" : "")}
+                title="Buscar en el historial (Ctrl+Shift+F)"
+                aria-label="Buscar en la terminal"
+                onClick={openFind}
+              >
+                ⌕
+              </button>
+            )}
+            {files && (
+              <>
+                <button
+                  type="button"
+                  className="webterm__filesbtn"
+                  title="Subir archivo(s) al directorio actual"
+                  aria-label="Subir archivo"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  ⬆
+                </button>
+                <button
+                  type="button"
+                  className="webterm__filesbtn"
+                  title="Subir una carpeta completa (se comprime en el navegador y se extrae acá)"
+                  aria-label="Subir carpeta"
+                  onClick={() => folderInputRef.current?.click()}
+                >
+                  ⬆📁
+                </button>
+                <button
+                  type="button"
+                  className={"webterm__filesbtn" + (browseOpen ? " is-active" : "")}
+                  title="Descargar archivos del directorio actual"
+                  aria-label="Descargar archivo"
+                  onClick={toggleBrowse}
+                >
+                  ⬇
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
+        {search && findOpen && (
+          <div className="webterm__find">
+            <input
+              ref={findInputRef}
+              className="webterm__findinput"
+              value={findQuery}
+              placeholder="Buscar en el historial…"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck="false"
+              aria-label="Buscar en la terminal"
+              onChange={(e) => {
+                const q = e.target.value;
+                setFindQuery(q);
+                if (!q) {
+                  searchRef.current?.clearDecorations?.();
+                  setFindInfo({ index: -1, count: 0 });
+                  return;
+                }
+                // incremental: mientras se escribe no salta a la coincidencia
+                // siguiente, se queda en la más cercana a lo que ya había.
+                searchRef.current?.findNext(q, { ...SEARCH_OPTS, incremental: true });
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  if (e.shiftKey) findPrevious(findQuery);
+                  else findNext(findQuery);
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  closeFind();
+                }
+              }}
+            />
+            <span className="webterm__findcount">
+              {findQuery ? (findInfo.count ? `${findInfo.index + 1}/${findInfo.count}` : "0") : ""}
+            </span>
+            <button
+              type="button"
+              className="webterm__findbtn"
+              onClick={() => findPrevious(findQuery)}
+              disabled={!findQuery}
+              aria-label="Coincidencia anterior"
+              title="Anterior (Shift+Enter)"
+            >
+              ↑
+            </button>
+            <button
+              type="button"
+              className="webterm__findbtn"
+              onClick={() => findNext(findQuery)}
+              disabled={!findQuery}
+              aria-label="Coincidencia siguiente"
+              title="Siguiente (Enter)"
+            >
+              ↓
+            </button>
+            <button
+              type="button"
+              className="webterm__x"
+              onClick={closeFind}
+              aria-label="Cerrar buscador"
+            >
+              ×
+            </button>
+          </div>
+        )}
+
         {files && (
           <>
-            <div className="webterm__filesbar">
-              <button
-                type="button"
-                className="webterm__filesbtn"
-                title="Subir archivo(s) al directorio actual"
-                aria-label="Subir archivo"
-                onClick={() => fileInputRef.current?.click()}
-              >
-                ⬆
-              </button>
-              <button
-                type="button"
-                className="webterm__filesbtn"
-                title="Subir una carpeta completa (se comprime en el navegador y se extrae acá)"
-                aria-label="Subir carpeta"
-                onClick={() => folderInputRef.current?.click()}
-              >
-                ⬆📁
-              </button>
-              <button
-                type="button"
-                className={"webterm__filesbtn" + (browseOpen ? " is-active" : "")}
-                title="Descargar archivos del directorio actual"
-                aria-label="Descargar archivo"
-                onClick={toggleBrowse}
-              >
-                ⬇
-              </button>
-            </div>
             <input
               ref={fileInputRef}
               type="file"

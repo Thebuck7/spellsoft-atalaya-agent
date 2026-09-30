@@ -17,6 +17,24 @@ function uid() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
+const STATUS_TITLE = {
+  connecting: "conectando…",
+  disconnected: "desconectada — reintentando",
+};
+
+/** Punto de aviso. Solo se pinta cuando algo NO está bien: una terminal sana no
+ *  necesita decorado, y así el punto significa siempre "mirá esto". */
+function StatusDot({ status }) {
+  if (!status || status === "connected") return null;
+  return (
+    <span
+      className={"wtws__dot wtws__dot--" + status}
+      title={STATUS_TITLE[status] || status}
+      aria-label={STATUS_TITLE[status] || status}
+    />
+  );
+}
+
 const MIN_W = 260;
 const MIN_H = 160;
 const DEF_W = 620;
@@ -68,6 +86,7 @@ function useViewportWide(min) {
  *   windowsMinWidth            px; below this, "auto" uses tabs (default 720)
  *   theme, fontSize, fontFamily, cursorBlink, autoReconnect   forwarded to <WebTerm>
  *   files, filesPath           forwarded to <WebTerm> (upload/download UI, default true / "/webterm-files")
+ *   search                     forwarded to <WebTerm> (find bar, default true)
  *   newTerminalTitle           (n) => string   (default `Terminal ${n}`)
  *   className, style
  *
@@ -90,6 +109,7 @@ export const TerminalWorkspace = forwardRef(function TerminalWorkspace(props, re
     mobileToolbar = "auto",
     files = true,
     filesPath = "/webterm-files",
+    search = true,
     newTerminalTitle = (n) => `Terminal ${n}`,
     className,
     style,
@@ -115,6 +135,21 @@ export const TerminalWorkspace = forwardRef(function TerminalWorkspace(props, re
   });
 
   const { terminals, activeId } = state;
+
+  // Estado de conexión por terminal, para avisar en la pestaña/ventana cuando
+  // una perdió el socket: sin esto el aviso solo aparece dentro del propio
+  // xterm, invisible si esa terminal no es la que estás mirando.
+  const [statuses, setStatuses] = useState({});
+  const statusCbs = useRef(new Map());
+  const getStatusCb = (id) => {
+    let cb = statusCbs.current.get(id);
+    if (!cb) {
+      cb = (st) =>
+        setStatuses((prev) => (prev[id] === st ? prev : { ...prev, [id]: st }));
+      statusCbs.current.set(id, cb);
+    }
+    return cb;
+  };
 
   const wide = useViewportWide(windowsMinWidth);
   const mode = layout === "auto" ? (wide ? "windows" : "tabs") : layout;
@@ -214,7 +249,14 @@ export const TerminalWorkspace = forwardRef(function TerminalWorkspace(props, re
     handles.current.get(id)?.endSession(); // kill the PTY server-side
     handles.current.delete(id);
     refCbs.current.delete(id);
+    statusCbs.current.delete(id);
     mounted.current.delete(id);
+    setStatuses((prev) => {
+      if (!(id in prev)) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
     setState((s) => {
       const remaining = s.terminals.filter((t) => t.id !== id);
       const activeId =
@@ -300,6 +342,8 @@ export const TerminalWorkspace = forwardRef(function TerminalWorkspace(props, re
         mobileToolbar={mobileToolbar}
         files={files}
         filesPath={filesPath}
+        search={search}
+        onStatusChange={getStatusCb(t.id)}
         style={{ height: "100%" }}
       />
     );
@@ -314,10 +358,29 @@ export const TerminalWorkspace = forwardRef(function TerminalWorkspace(props, re
     >
       {mode === "tabs" ? (
         <>
-          <div className="wtws__tabs" role="tablist">
+          <div
+            className="wtws__tabs"
+            role="tablist"
+            aria-label="Terminales abiertas"
+            onKeyDown={(e) => {
+              // Flechas para moverse entre pestañas, como en cualquier tablist.
+              if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+              const i = terminals.findIndex((x) => x.id === activeId);
+              if (i < 0) return;
+              const step = e.key === "ArrowRight" ? 1 : -1;
+              const next = terminals[(i + step + terminals.length) % terminals.length];
+              if (next) {
+                e.preventDefault();
+                setActive(next.id);
+              }
+            }}
+          >
             {terminals.map((t) => (
               <div
                 key={t.id}
+                role="tab"
+                aria-selected={t.id === activeId}
+                tabIndex={t.id === activeId ? 0 : -1}
                 className={"wtws__tab" + (t.id === activeId ? " is-active" : "")}
                 onClick={() => setActive(t.id)}
                 onDoubleClick={() =>
@@ -327,6 +390,7 @@ export const TerminalWorkspace = forwardRef(function TerminalWorkspace(props, re
                   )
                 }
               >
+                <StatusDot status={statuses[t.id]} />
                 <span className="wtws__tabname">{t.title}</span>
                 <button
                   type="button"
@@ -361,6 +425,8 @@ export const TerminalWorkspace = forwardRef(function TerminalWorkspace(props, re
             {terminals.map((t) => (
               <div
                 key={t.id}
+                role="tabpanel"
+                aria-label={t.title}
                 className="wtws__pane"
                 style={{ display: t.id === activeId ? "block" : "none" }}
               >
@@ -384,6 +450,7 @@ export const TerminalWorkspace = forwardRef(function TerminalWorkspace(props, re
                 <WindowFrame
                   key={t.id}
                   term={t}
+                  status={statuses[t.id]}
                   front={i === terminals.length - 1}
                   getBounds={getBounds}
                   onFocus={() => setActive(t.id)}
@@ -426,6 +493,7 @@ export const TerminalWorkspace = forwardRef(function TerminalWorkspace(props, re
                   t.minimized ? setMinimized(t.id, false) : setActive(t.id)
                 }
               >
+                <StatusDot status={statuses[t.id]} />
                 {t.title}
                 <span
                   className="wtws__x"
@@ -449,6 +517,7 @@ export const TerminalWorkspace = forwardRef(function TerminalWorkspace(props, re
 
 function WindowFrame({
   term,
+  status,
   front,
   getBounds,
   onFocus,
@@ -526,6 +595,7 @@ function WindowFrame({
         onPointerDown={(e) => begin(e, "move")}
         onDoubleClick={onMaximize}
       >
+        <StatusDot status={status} />
         <span
           className="wtws__title"
           onDoubleClick={(e) => {

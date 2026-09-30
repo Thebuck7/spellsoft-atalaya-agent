@@ -1,10 +1,14 @@
-# webterm-app
+# Portal
 
 Terminal web (pestañas + ventanas, xterm.js) — **proyecto autocontenido**,
 instalable en cualquier servidor Linux con un `git clone` + `./install.sh`.
 
+Los paquetes internos y las variables de entorno siguen llamándose `webterm*`
+por compatibilidad (el producto se renombró a Portal después); el nombre del
+producto es el que va en la UI y en la documentación.
+
 ```
-webterm-app/
+portal-app/
 ├── packages/
 │   ├── react-webterm/     <TerminalWorkspace /> — componente React (xterm.js)
 │   └── webterm-server/    attachWebTerm() + CLI `webterm-server` (ws + node-pty)
@@ -19,7 +23,7 @@ webterm-app/
 (no symlinks a otro repo) — este proyecto no depende de nada fuera de sí
 mismo. Antes vivían en un monorepo aparte (`/root/webterm`, pensado para
 compartir entre varias apps); ese repo se deja intacto como referencia, pero
-**webterm-app ya no lo usa**. Si en el futuro hace falta reusar el
+**Portal ya no lo usa**. Si en el futuro hace falta reusar el
 componente/servidor en otro proyecto, copiá desde acá (o desde `/root/webterm`
 si preferís no arrastrar las mejoras de acá).
 
@@ -34,8 +38,8 @@ si preferís no arrastrar las mejoras de acá).
 ## Instalar en un servidor nuevo
 
 ```bash
-git clone <este-repo> webterm-app
-cd webterm-app
+git clone <este-repo> portal-app
+cd portal-app
 ./install.sh
 ```
 
@@ -85,6 +89,8 @@ para la lista con comentarios; referencia completa:
 | `WEBTERM_FILES`                | `--no-files` (desactiva)| `1` (activado)       | rutas HTTP de subir/bajar archivos |
 | `WEBTERM_FILES_PATH`           | `--files-path`          | `/webterm-files`     | prefijo de esas rutas |
 | `WEBTERM_MAX_UPLOAD_MB`        | `--max-upload-mb`       | `500`                 | tamaño máx. por archivo subido |
+| `WEBTERM_PING_INTERVAL`        | `--ping-interval`       | `30` (segundos)      | keepalive del WebSocket; `0` lo desactiva |
+| `WEBTERM_MAX_BUFFER_MB`        | `--max-buffer-mb`       | `8`                   | backlog por cliente antes de recortarle la salida |
 
 `webterm-server --help` imprime esta misma tabla desde la terminal.
 
@@ -120,6 +126,12 @@ El WebSocket (`/ws`) lo sirve el propio Vite vía el plugin en
 `packages/react-webterm/src/*`, `npm run dev`/`npm run build` reconstruyen
 la librería solos (script `build:lib`) antes de arrancar.
 
+Esta máquina ya tiene esto enganchado al panel de servicios
+(`/root/service-dashboard`, comando `svc`): la entrada "Terminal" corre
+`npm run dev` acá adentro. `up.sh` es el arranque específico de esta
+máquina (token + publicar IP al dashboard) — no hace falta para instalar
+esto en otro servidor, ahí `install.sh` + `npm start`/systemd alcanza.
+
 ### Producción local (sin systemd)
 
 ```bash
@@ -135,6 +147,25 @@ npm run start:lan     # igual, en 0.0.0.0
   posición de las ventanas) se guarda en `localStorage` del navegador.
 - `GET /healthz` devuelve `{"ok":true}` — útil para healthchecks de un
   reverse proxy o de systemd/docker.
+- **Buscar en el historial**: `Ctrl`/`Cmd`+`Shift`+`F` (o el botón ⌕ arriba a
+  la derecha, para el celular) abre el buscador: resalta todas las
+  coincidencias, `Enter`/`Shift`+`Enter` salta entre ellas, `Esc` cierra.
+- **Renderizado**: si el navegador tiene WebGL, xterm lo usa (mucho más rápido
+  con salida pesada). El addon se carga en un chunk aparte y, si no hay
+  contexto WebGL o se pierde, cae solo al renderizado por DOM.
+- **Reconexión**: con el server caído, los reintentos hacen backoff exponencial
+  (1s → 15s, con jitter) en vez de un pedido por segundo por terminal, y el
+  aviso `[desconectado]` se escribe una sola vez. La pestaña/ventana de cada
+  terminal muestra un punto de estado cuando esa terminal *no* está conectada.
+- **Keepalive**: el server pinguea cada `WEBTERM_PING_INTERVAL` segundos y corta
+  al cliente que no contesta. Sin eso, una conexión que desaparece sin cerrarse
+  (celular que se suspende, wifi que se va) queda contada como cliente activo y
+  mantiene su sesión viva para siempre, aunque `WEBTERM_SESSION_TIMEOUT` diga
+  otra cosa.
+- **Clientes lentos**: si un cliente acumula más de `WEBTERM_MAX_BUFFER_MB` sin
+  drenar, se le recorta la salida mientras esté atrasado (y se le avisa en
+  pantalla al recuperarse) en lugar de encolar sin techo. El scrollback de la
+  sesión sigue guardando el final.
 - **Subir/bajar carpetas enteras**: el botón "⬆📁" (o arrastrar una carpeta
   sobre la terminal) la comprime en el navegador y la extrae del lado del
   servidor preservando subcarpetas; "⬇📁" en la barra de navegación de

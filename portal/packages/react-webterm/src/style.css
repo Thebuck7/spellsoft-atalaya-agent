@@ -132,6 +132,65 @@
   display: none;
 }
 
+/* ── buscador (Ctrl+Shift+F) ──────────────────────────────────────────── */
+.webterm__find {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  background: rgba(37, 37, 38, 0.97);
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.45);
+  z-index: 25;
+  font: 12px/1.4 ui-sans-serif, system-ui, sans-serif;
+  color: #ddd;
+  max-width: calc(100% - 16px);
+}
+.webterm__findinput {
+  min-width: 0;
+  width: 190px;
+  max-width: 40vw;
+  padding: 4px 7px;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  background: #1e1e1e;
+  color: #ddd;
+  font: inherit;
+}
+.webterm__findinput:focus {
+  outline: none;
+  border-color: #0e639c;
+}
+.webterm__findcount {
+  flex: none;
+  min-width: 34px;
+  text-align: center;
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+}
+.webterm__findbtn {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 4px;
+  background: #3a3a3a;
+  color: #ddd;
+  cursor: pointer;
+  line-height: 1;
+}
+.webterm__findbtn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.webterm__findbtn:not(:disabled):hover {
+  background: #454545;
+}
+
 .webterm__uploads {
   position: absolute;
   right: 8px;
@@ -398,6 +457,29 @@
   font: 13px/1.4 ui-sans-serif, system-ui, sans-serif;
 }
 
+/* Punto de aviso por terminal (solo cuando no está conectada). */
+.wtws__dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #888;
+}
+.wtws__dot--connecting {
+  background: #d29922;
+  animation: wtws-blink 1.2s ease-in-out infinite;
+}
+.wtws__dot--disconnected {
+  background: #f85149;
+}
+@keyframes wtws-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wtws__dot--connecting { animation: none; }
+}
+
 /* tabs mode */
 .wtws__tabs {
   display: flex;
@@ -421,6 +503,13 @@
   color: inherit;
   cursor: pointer;
   white-space: nowrap;
+}
+.wtws__tab:focus-visible,
+.wtws__chip:focus-visible,
+.wtws__add:focus-visible,
+.wtws__winbtn:focus-visible {
+  outline: 2px solid var(--wtws-accent);
+  outline-offset: 1px;
 }
 .wtws__tab.is-active {
   background: var(--wtws-bg);

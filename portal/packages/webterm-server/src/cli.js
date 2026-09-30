@@ -45,6 +45,9 @@ Uso: webterm-server [opciones]
   --max-upload-mb <n>      tamaño máx. de subida (MB)         WEBTERM_MAX_UPLOAD_MB (500)
   --no-files               desactiva subir/bajar archivos     WEBTERM_FILES=0
   --files-path <ruta>      ruta de las rutas de archivos      WEBTERM_FILES_PATH (/webterm-files)
+  --ping-interval <s>      keepalive del WebSocket (0=off)    WEBTERM_PING_INTERVAL (30)
+  --max-buffer-mb <n>      backlog por cliente antes de       WEBTERM_MAX_BUFFER_MB (8)
+                           recortarle la salida
 
 Cualquier opción también se puede fijar en un archivo .env en el directorio
 desde donde se ejecuta (ver .env.example).
@@ -68,6 +71,8 @@ const SCROLLBACK_BYTES = intOpt(
 const MAX_UPLOAD_MB = intOpt("max-upload-mb", process.env.WEBTERM_MAX_UPLOAD_MB, 500);
 const FILES = hasFlag("no-files") ? false : envBool(process.env.WEBTERM_FILES, true);
 const FILES_PATH = opt("files-path", process.env.WEBTERM_FILES_PATH || "/webterm-files");
+const PING_INTERVAL = intOpt("ping-interval", process.env.WEBTERM_PING_INTERVAL, 30);
+const MAX_BUFFER_MB = intOpt("max-buffer-mb", process.env.WEBTERM_MAX_BUFFER_MB, 8);
 
 // segundos que el shell sobrevive tras cerrarse la pestaña (refresco). 0 = no; "inf" = siempre
 const ST_RAW = opt("session-timeout", process.env.WEBTERM_SESSION_TIMEOUT || "600");
@@ -122,6 +127,8 @@ const wt = attachWebTerm(server, {
   maxUploadBytes: MAX_UPLOAD_MB * 1024 * 1024,
   files: FILES,
   filesPath: FILES_PATH,
+  pingInterval: Math.max(0, PING_INTERVAL) * 1000,
+  maxBufferedBytes: Math.max(1, MAX_BUFFER_MB) * 1024 * 1024,
   onSession: (s) =>
     console.log(
       `[webterm] sesión ${s.resuming ? "reanudada" : "nueva"} ` +
